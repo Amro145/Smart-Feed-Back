@@ -1,64 +1,264 @@
 import { DurableObject } from "cloudflare:workers";
 
-/**
- * Welcome to Cloudflare Workers! This is your first Durable Objects application.
- *
- * - Run `npm run dev` in your terminal to start a development server
- * - Open a browser tab at http://localhost:8787/ to see your Durable Object in action
- * - Run `npm run deploy` to publish your application
- *
- * Bind resources to your worker in `wrangler.jsonc`. After adding bindings, a type definition for the
- * `Env` object can be regenerated with `npm run cf-typegen`.
- *
- * Learn more at https://developers.cloudflare.com/durable-objects
- */
-
-/** A Durable Object's behavior is defined in an exported Javascript class */
+interface Env {
+	MY_DURABLE_OBJECT: DurableObjectNamespace<MyDurableObject>;
+	FEEDBACK_QUEUE: Queue;
+	AI: any;
+	VECTOR_INDEX: VectorizeIndex;
+}
 export class MyDurableObject extends DurableObject<Env> {
-	/**
-	 * The constructor is invoked once upon creation of the Durable Object, i.e. the first call to
-	 * 	`DurableObjectStub::get` for a given identifier (no-op constructors can be omitted)
-	 *
-	 * @param ctx - The interface for interacting with Durable Object state
-	 * @param env - The interface to reference bindings declared in wrangler.jsonc
-	 */
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
 	}
 
-	/**
-	 * The Durable Object exposes an RPC method sayHello which will be invoked when a Durable
-	 *  Object instance receives a request from a Worker via the same method invocation on the stub
-	 *
-	 * @param name - The name provided to a Durable Object instance from a Worker
-	 * @returns The greeting to be sent back to the Worker
-	 */
-	async sayHello(name: string): Promise<string> {
-		return `Hello, ${name}!`;
+	async fetch(request: Request): Promise<Response> {
+		const url = new URL(request.url);
+
+		if (request.method === "POST" && url.pathname === "/increment") {
+			let count: number = await this.ctx.storage.get("message_count") || 0;
+			count++;
+			await this.ctx.storage.put("message_count", count);
+
+			const data = (await request.json()) as { text: string; sentiment: any };
+			let recent: any[] = await this.ctx.storage.get("recent_messages") || [];
+			
+			recent.unshift({ 
+				text: data.text || "No feedback text", 
+				sentiment: data.sentiment || "UNKNOWN", 
+				timestamp: Date.now() 
+			});
+			recent = recent.slice(0, 5); // keep only last 5
+
+			await this.ctx.storage.put("recent_messages", recent);
+
+			return new Response("Incremented");
+		}
+
+		if (request.method === "GET" && url.pathname === "/stats") {
+			const count = await this.ctx.storage.get("message_count") || 0;
+			const recent = await this.ctx.storage.get("recent_messages") || [];
+			return new Response(JSON.stringify({ count, recent }), {
+				headers: { "Content-Type": "application/json" }
+			});
+		}
+
+		return new Response("Not found", { status: 404 });
 	}
 }
 
+const dashboardHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Feedback Dashboard</title>
+    <style>
+        :root { --bg: #0f172a; --card: #1e293b; --text: #f8fafc; --accent: #3b82f6; --accent-glow: rgba(59, 130, 246, 0.5); }
+        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); padding: 2rem; margin: 0; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .header { text-align: center; margin-bottom: 2rem; }
+        .header h1 { font-size: 2.5rem; background: linear-gradient(90deg, #3b82f6, #8b5cf6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 0.5rem; }
+        .header p { color: #94a3b8; font-size: 1.1rem; }
+        .card { background: var(--card); border-radius: 1rem; padding: 2rem; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 0 20px var(--accent-glow); margin-bottom: 2rem; border: 1px solid rgba(255,255,255,0.05); }
+        .card h2 { margin-top: 0; margin-bottom: 1.5rem; font-size: 1.25rem; font-weight: 600; color: #cbd5e1; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 0.75rem;}
+        .counter { font-size: 5rem; font-weight: bold; text-align: center; color: var(--accent); }
+        .message-list { list-style: none; padding: 0; margin: 0; }
+        .message-item { padding: 1.25rem; border-bottom: 1px solid rgba(255,255,255,0.1); display: flex; justify-content: space-between; align-items: center; transition: background 0.2s; border-radius: 0.5rem; }
+        .message-item:hover { background: rgba(255,255,255,0.05); }
+        .message-item:last-child { border-bottom: none; }
+        .badge { padding: 0.35rem 0.85rem; border-radius: 999px; font-size: 0.85rem; font-weight: bold; letter-spacing: 0.05em; text-transform: uppercase;}
+        .badge.positive { background: rgba(34, 197, 94, 0.2); color: #4ade80; border: 1px solid rgba(74, 222, 128, 0.2);}
+        .badge.negative { background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(248, 113, 113, 0.2);}
+        .badge.neutral { background: rgba(148, 163, 184, 0.2); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.2);}
+        .text { flex-grow: 1; margin-right: 1.5rem; font-size: 1.05rem; line-height: 1.5; color: #e2e8f0; }
+        .date { font-size: 0.8rem; color: #64748b; margin-top: 0.25rem; }
+        .default-form { display: flex; flex-direction: column; gap: 1rem; }
+        #feedbackInput { width: 100%; min-height: 100px; padding: 1rem; border-radius: 0.5rem; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: var(--text); font-family: inherit; resize: vertical; box-sizing: border-box; }
+        #feedbackInput:focus { outline: none; border-color: var(--accent); }
+        #submitBtn { background: var(--accent); color: white; border: none; padding: 0.75rem 1.5rem; border-radius: 0.5rem; font-weight: 600; cursor: pointer; transition: all 0.2s; font-size: 1rem; align-self: flex-start; }
+        #submitBtn:hover { background: #2563eb; transform: translateY(-1px); box-shadow: 0 4px 12px var(--accent-glow); }
+        #submitBtn:disabled { opacity: 0.7; cursor: not-allowed; transform: none; box-shadow: none; }
+    </style>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Feedback Intelligence Dashboard</h1>
+            <p>Live AI Sentiment Analysis Monitor</p>
+        </div>
+
+        <div class="card">
+            <h2>Submit New Feedback</h2>
+            <div class="default-form">
+                <textarea id="feedbackInput" placeholder="Enter student feedback here..."></textarea>
+                <button id="submitBtn" onclick="sendFeedback()">Submit for AI Analysis</button>
+            </div>
+        </div>
+        
+        <div class="card">
+            <h2>Total Feedback Analyzed</h2>
+            <div id="counter" class="counter">...</div>
+        </div>
+
+        <div class="card">
+            <h2>Last 5 Analyzed Messages</h2>
+            <ul id="messages" class="message-list">
+                <li style="text-align: center; color: #94a3b8; padding: 2rem;">Loading latest feedback...</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        async function fetchStats() {
+            try {
+                const res = await fetch('/api/stats');
+                const data = await res.json();
+                
+                document.getElementById('counter').innerText = data.count || 0;
+                
+                const messageList = document.getElementById('messages');
+                if (data.recent && data.recent.length > 0) {
+                    messageList.innerHTML = data.recent.map(msg => {
+                        let label = 'UNKNOWN';
+                        let cssClass = '';
+                        if (msg.sentiment) {
+                            if (typeof msg.sentiment === 'string') {
+                                label = msg.sentiment;
+                            } else if (Array.isArray(msg.sentiment) && msg.sentiment.length > 0) {
+                                label = msg.sentiment[0].label;
+                            } else if (msg.sentiment.label) {
+                                label = msg.sentiment.label;
+                            }
+                        }
+                        
+                        const upperLabel = label.toUpperCase();
+                        if (upperLabel.includes('POS')) cssClass = 'positive';
+                        else if (upperLabel.includes('NEG')) cssClass = 'negative';
+                        else if (upperLabel.includes('NEU')) cssClass = 'neutral';
+                        
+                        const dateStr = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString() : '';
+                        
+                        return \`<li class="message-item">
+                                    <div style="flex-grow: 1;">
+                                        <div class="text">"\${msg.text}"</div>
+                                        <div class="date">\${dateStr}</div>
+                                    </div>
+                                    <span class="badge \${cssClass}">\${upperLabel}</span>
+                                </li>\`;
+                    }).join('');
+                } else {
+                    messageList.innerHTML = '<li style="text-align: center; color: #94a3b8; padding: 2rem;">No messages yet.</li>';
+                }
+            } catch (err) {
+                console.error("Failed to fetch stats", err);
+            }
+        }
+
+        async function sendFeedback() {
+            const input = document.getElementById('feedbackInput');
+            const btn = document.getElementById('submitBtn');
+            const text = input.value.trim();
+            
+            if (!text) {
+                alert("Please enter some feedback before submitting.");
+                return;
+            }
+
+            btn.disabled = true;
+            btn.innerText = "Sending...";
+
+            try {
+                const res = await fetch('/', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text })
+                });
+
+                if (res.ok) {
+                    input.value = '';
+                    fetchStats();
+                    setTimeout(fetchStats, 2000); 
+                } else {
+                    alert("Failed to send feedback. Please try again.");
+                }
+            } catch (err) {
+                console.error(err);
+                alert("An error occurred while sending feedback.");
+            } finally {
+                btn.disabled = false;
+                btn.innerText = "Submit for AI Analysis";
+            }
+        }
+
+        fetchStats();
+        setInterval(fetchStats, 5000);
+    </script>
+</body>
+</html>`;
+
 export default {
-	/**
-	 * This is the standard fetch handler for a Cloudflare Worker
-	 *
-	 * @param request - The request submitted to the Worker from the client
-	 * @param env - The interface to reference bindings declared in wrangler.jsonc
-	 * @param ctx - The execution context of the Worker
-	 * @returns The response to be sent back to the client
-	 */
-	async fetch(request, env, ctx): Promise<Response> {
-		// Create a stub to open a communication channel with the Durable Object
-		// instance named "foo".
-		//
-		// Requests from all Workers to the Durable Object instance named "foo"
-		// will go to a single remote Durable Object instance.
-		const stub = env.MY_DURABLE_OBJECT.getByName("foo");
+	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+		const url = new URL(request.url);
 
-		// Call the `sayHello()` RPC method on the stub to invoke the method on
-		// the remote Durable Object instance.
-		const greeting = await stub.sayHello("world");
+		if (request.method === "GET") {
+			if (url.pathname === "/") {
+				return new Response(dashboardHtml, {
+					headers: { "Content-Type": "text/html;charset=utf-8" }
+				});
+			} else if (url.pathname === "/api/stats") {
+				const id = env.MY_DURABLE_OBJECT.idFromName("global-stats");
+				const stub = env.MY_DURABLE_OBJECT.get(id);
+				return stub.fetch(new Request("http://do/stats"));
+			}
+		}
 
-		return new Response(greeting);
+		if (request.method === "POST" && url.pathname !== "/increment") {
+			const { text } = (await request.json()) as { text: string };
+
+			await env.FEEDBACK_QUEUE.send({
+				text
+			});
+			return new Response("Feedback sent successfully", { status: 200 });
+		}
+		
+		return new Response("Invalid request", { status: 400 });
 	},
+	async queue(batch: MessageBatch<any>, env: Env, ctx: ExecutionContext) {
+		for (const message of batch.messages) {
+			const content = message.body.text; 
+
+			// 1. AI Sentiment Analysis
+			const aiResponse = await env.AI.run("@cf/meta/llama-3-8b-instruct", {
+				messages: [
+					{
+						role: "system",
+						content: "You are a sentiment analysis assistant. Analyze the sentiment of the following feedback and respond with only one word: POSITIVE, NEGATIVE, or NEUTRAL.",
+					},
+					{
+						role: "user",
+						content: `Analyze the sentiment of the following feedback and respond with only one word: POSITIVE, NEGATIVE, or NEUTRAL. Feedback: ${content}`,
+					},
+				],
+			});
+			const sentiment = aiResponse.response.trim().toUpperCase();
+
+			// 2. AI Pipeline Component
+			const embedding = await env.AI.run("@cf/baai/bge-small-en-v1.5", { text: [content] });
+			
+			// 3. Save to Vectorize
+			await env.VECTOR_INDEX.upsert([{ id: message.id, values: embedding.data[0] }]);
+			
+			// 4. Update Durable Object properties
+			const id = env.MY_DURABLE_OBJECT.idFromName("global-stats");
+			const stub = env.MY_DURABLE_OBJECT.get(id);
+			await stub.fetch(new Request("http://do/increment", {
+				method: "POST",
+				body: JSON.stringify({ text: content, sentiment }),
+				headers: { "Content-Type": "application/json" }
+			}));
+
+			console.log(`feedback ${message.id} processed successfully: ${content} | Sentiment: ${JSON.stringify(sentiment)}`);
+		}
+	}
 } satisfies ExportedHandler<Env>;

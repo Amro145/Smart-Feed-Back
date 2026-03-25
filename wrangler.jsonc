@@ -29,6 +29,38 @@
 	"upload_source_maps": true,
 	"compatibility_flags": [
 		"nodejs_compat"
+	],
+	// Add Ai
+	"ai": {
+		"binding": "AI"
+	},
+	// add queues
+	"queues": {
+		"producers": [
+			{
+				"binding": "FEEDBACK_QUEUE",
+				"queue": "feedback-queue",
+			}
+		],
+		"consumers": [
+			{
+				"queue": "feedback-queue",
+				"max_batch_size": 10,
+				"max_batch_timeout": 60,
+			}
+		]
+	},
+	// add vectorize
+	"vectorize": [
+		{
+			"binding": "VECTOR_INDEX",
+			"index_name": "feedback-vectors"
+		},
+		{
+			"binding": "VECTORIZE",
+			"index_name": "feedback-vectors",
+			"remote": true
+		}
 	]
 	/**
 	 * Smart Placement
