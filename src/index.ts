@@ -10,10 +10,10 @@ export class MyDurableObject extends DurableObject<Env> {
     constructor(ctx: DurableObjectState, env: Env) {
         super(ctx, env);
     }
-
+    // handle all request
     async fetch(request: Request): Promise<Response> {
         const url = new URL(request.url);
-
+// /increment
         if (request.method === "POST" && url.pathname === "/increment") {
             let count: number = await this.ctx.storage.get("message_count") || 0;
             count++;
@@ -33,7 +33,7 @@ export class MyDurableObject extends DurableObject<Env> {
 
             return new Response("Incremented");
         }
-
+// /stats
         if (request.method === "GET" && url.pathname === "/stats") {
             const count = await this.ctx.storage.get("message_count") || 0;
             const recent = await this.ctx.storage.get("recent_messages") || [];
@@ -41,6 +41,7 @@ export class MyDurableObject extends DurableObject<Env> {
                 headers: { "Content-Type": "application/json" }
             });
         }
+        // /api/search
         if (url.pathname === "/api/search") {
             const query = url.searchParams.get("q");
             if (!query) {
@@ -62,7 +63,7 @@ export class MyDurableObject extends DurableObject<Env> {
         return new Response("Not found", { status: 404 });
     }
 }
-
+// dashboard UI
 const dashboardHtml = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -262,10 +263,11 @@ const dashboardHtml = `<!DOCTYPE html>
 </body>
 </html>`;
 
+// handle all request
 export default {
     async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
         const url = new URL(request.url);
-
+// /
         if (request.method === "GET") {
             if (url.pathname === "/") {
                 return new Response(dashboardHtml, {
@@ -281,7 +283,7 @@ export default {
                 return stub.fetch(new Request("http://do/api/search" + url.search));
             }
         }
-
+// /increment
         if (request.method === "POST" && url.pathname !== "/increment") {
             const { text } = (await request.json()) as { text: string };
 
@@ -293,6 +295,7 @@ export default {
 
         return new Response("Invalid request", { status: 400 });
     },
+    // queue handler
     async queue(batch: MessageBatch<any>, env: Env, ctx: ExecutionContext) {
         for (const message of batch.messages) {
             const content = message.body.text;
