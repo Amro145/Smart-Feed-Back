@@ -51,7 +51,7 @@ export class MyDurableObject extends DurableObject<Env> {
             const vector = embeddings.data[0];
             // find 3 word that similar to query
             const matches = await this.env.VECTOR_INDEX.query(vector, {
-                topK: 3,
+                topK: 5,
                 returnMetadata: true
             });
             return new Response(JSON.stringify(matches), {
