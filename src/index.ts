@@ -1,49 +1,66 @@
 import { DurableObject } from "cloudflare:workers";
 
 interface Env {
-	MY_DURABLE_OBJECT: DurableObjectNamespace<MyDurableObject>;
-	FEEDBACK_QUEUE: Queue;
-	AI: any;
-	VECTOR_INDEX: VectorizeIndex;
+    MY_DURABLE_OBJECT: DurableObjectNamespace<MyDurableObject>;
+    FEEDBACK_QUEUE: Queue;
+    AI: any;
+    VECTOR_INDEX: VectorizeIndex;
 }
 export class MyDurableObject extends DurableObject<Env> {
-	constructor(ctx: DurableObjectState, env: Env) {
-		super(ctx, env);
-	}
+    constructor(ctx: DurableObjectState, env: Env) {
+        super(ctx, env);
+    }
 
-	async fetch(request: Request): Promise<Response> {
-		const url = new URL(request.url);
+    async fetch(request: Request): Promise<Response> {
+        const url = new URL(request.url);
 
-		if (request.method === "POST" && url.pathname === "/increment") {
-			let count: number = await this.ctx.storage.get("message_count") || 0;
-			count++;
-			await this.ctx.storage.put("message_count", count);
+        if (request.method === "POST" && url.pathname === "/increment") {
+            let count: number = await this.ctx.storage.get("message_count") || 0;
+            count++;
+            await this.ctx.storage.put("message_count", count);
 
-			const data = (await request.json()) as { text: string; sentiment: any };
-			let recent: any[] = await this.ctx.storage.get("recent_messages") || [];
-			
-			recent.unshift({ 
-				text: data.text || "No feedback text", 
-				sentiment: data.sentiment || "UNKNOWN", 
-				timestamp: Date.now() 
-			});
-			recent = recent.slice(0, 5); // keep only last 5
+            const data = (await request.json()) as { text: string; sentiment: any };
+            let recent: any[] = await this.ctx.storage.get("recent_messages") || [];
 
-			await this.ctx.storage.put("recent_messages", recent);
+            recent.unshift({
+                text: data.text || "No feedback text",
+                sentiment: data.sentiment || "UNKNOWN",
+                timestamp: Date.now()
+            });
+            recent = recent.slice(0, 5); // keep only last 5
 
-			return new Response("Incremented");
-		}
+            await this.ctx.storage.put("recent_messages", recent);
 
-		if (request.method === "GET" && url.pathname === "/stats") {
-			const count = await this.ctx.storage.get("message_count") || 0;
-			const recent = await this.ctx.storage.get("recent_messages") || [];
-			return new Response(JSON.stringify({ count, recent }), {
-				headers: { "Content-Type": "application/json" }
-			});
-		}
+            return new Response("Incremented");
+        }
 
-		return new Response("Not found", { status: 404 });
-	}
+        if (request.method === "GET" && url.pathname === "/stats") {
+            const count = await this.ctx.storage.get("message_count") || 0;
+            const recent = await this.ctx.storage.get("recent_messages") || [];
+            return new Response(JSON.stringify({ count, recent }), {
+                headers: { "Content-Type": "application/json" }
+            });
+        }
+        if (url.pathname === "/api/search") {
+            const query = url.searchParams.get("q");
+            if (!query) {
+                return new Response("No query provided", { status: 400 });
+            }
+            // convert query to embedding
+            const embeddings = await this.env.AI.run("@cf/baai/bge-small-en-v1.5", { text: [query] });
+            const vector = embeddings.data[0];
+            // find 3 word that similar to query
+            const matches = await this.env.VECTOR_INDEX.query(vector, {
+                topK: 3,
+                returnMetadata: true
+            });
+            return new Response(JSON.stringify(matches), {
+                headers: { "Content-Type": "application/json" }
+            });
+        }
+
+        return new Response("Not found", { status: 404 });
+    }
 }
 
 const dashboardHtml = `<!DOCTYPE html>
@@ -99,6 +116,15 @@ const dashboardHtml = `<!DOCTYPE html>
         <div class="card">
             <h2>Total Feedback Analyzed</h2>
             <div id="counter" class="counter">...</div>
+        </div>
+
+        <div class="card">
+            <h2>Search Feedback Memory</h2>
+            <div class="default-form" style="flex-direction: row; flex-wrap: wrap;">
+                <input type="text" id="searchInput" placeholder="Search similar feedback..." style="flex-grow: 1; min-width: 200px; padding: 1rem; border-radius: 0.5rem; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: var(--text); font-family: inherit; box-sizing: border-box;">
+                <button id="searchBtn" onclick="searchFeedback()">Search</button>
+            </div>
+            <ul id="searchResults" class="message-list" style="margin-top: 1.5rem; display: none;"></ul>
         </div>
 
         <div class="card">
@@ -191,6 +217,45 @@ const dashboardHtml = `<!DOCTYPE html>
             }
         }
 
+        async function searchFeedback() {
+            const input = document.getElementById('searchInput');
+            const btn = document.getElementById('searchBtn');
+            const resultsList = document.getElementById('searchResults');
+            const query = input.value.trim();
+            
+            if (!query) return;
+
+            btn.disabled = true;
+            btn.innerText = "Searching...";
+            resultsList.style.display = "block";
+            resultsList.innerHTML = '<li style="text-align: center; color: #94a3b8; padding: 2rem;">Searching Vector Memory...</li>';
+
+            try {
+                const res = await fetch('/api/search?q=' + encodeURIComponent(query));
+                const data = await res.json();
+                
+                if (data.matches && data.matches.length > 0) {
+                    resultsList.innerHTML = data.matches.map(m => {
+                        const score = (m.score * 100).toFixed(1);
+                        return \`<li class="message-item">
+            <div style="flex-grow: 1;">
+                <div class="text">"\${m.metadata && m.metadata.text ? m.metadata.text : 'ID: ' + m.id}"</div> 
+            </div>
+            <span class="badge neutral">\${score}% Match</span>
+        </li>\`;
+                    }).join('');
+                } else {
+                    resultsList.innerHTML = '<li style="text-align: center; color: #94a3b8; padding: 2rem;">No similar feedback found.</li>';
+                }
+            } catch (err) {
+                console.error("Failed to search", err);
+                resultsList.innerHTML = '<li style="text-align: center; color: #ef4444; padding: 2rem;">Error performing search.</li>';
+            } finally {
+                btn.disabled = false;
+                btn.innerText = "Search";
+            }
+        }
+
         fetchStats();
         setInterval(fetchStats, 5000);
     </script>
@@ -198,67 +263,75 @@ const dashboardHtml = `<!DOCTYPE html>
 </html>`;
 
 export default {
-	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-		const url = new URL(request.url);
+    async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+        const url = new URL(request.url);
 
-		if (request.method === "GET") {
-			if (url.pathname === "/") {
-				return new Response(dashboardHtml, {
-					headers: { "Content-Type": "text/html;charset=utf-8" }
-				});
-			} else if (url.pathname === "/api/stats") {
-				const id = env.MY_DURABLE_OBJECT.idFromName("global-stats");
-				const stub = env.MY_DURABLE_OBJECT.get(id);
-				return stub.fetch(new Request("http://do/stats"));
-			}
-		}
+        if (request.method === "GET") {
+            if (url.pathname === "/") {
+                return new Response(dashboardHtml, {
+                    headers: { "Content-Type": "text/html;charset=utf-8" }
+                });
+            } else if (url.pathname === "/api/stats") {
+                const id = env.MY_DURABLE_OBJECT.idFromName("global-stats");
+                const stub = env.MY_DURABLE_OBJECT.get(id);
+                return stub.fetch(new Request("http://do/stats"));
+            } else if (url.pathname === "/api/search") {
+                const id = env.MY_DURABLE_OBJECT.idFromName("global-stats");
+                const stub = env.MY_DURABLE_OBJECT.get(id);
+                return stub.fetch(new Request("http://do/api/search" + url.search));
+            }
+        }
 
-		if (request.method === "POST" && url.pathname !== "/increment") {
-			const { text } = (await request.json()) as { text: string };
+        if (request.method === "POST" && url.pathname !== "/increment") {
+            const { text } = (await request.json()) as { text: string };
 
-			await env.FEEDBACK_QUEUE.send({
-				text
-			});
-			return new Response("Feedback sent successfully", { status: 200 });
-		}
-		
-		return new Response("Invalid request", { status: 400 });
-	},
-	async queue(batch: MessageBatch<any>, env: Env, ctx: ExecutionContext) {
-		for (const message of batch.messages) {
-			const content = message.body.text; 
+            await env.FEEDBACK_QUEUE.send({
+                text
+            });
+            return new Response("Feedback sent successfully", { status: 200 });
+        }
 
-			// 1. AI Sentiment Analysis
-			const aiResponse = await env.AI.run("@cf/meta/llama-3-8b-instruct", {
-				messages: [
-					{
-						role: "system",
-						content: "You are a sentiment analysis assistant. Analyze the sentiment of the following feedback and respond with only one word: POSITIVE, NEGATIVE, or NEUTRAL.",
-					},
-					{
-						role: "user",
-						content: `Analyze the sentiment of the following feedback and respond with only one word: POSITIVE, NEGATIVE, or NEUTRAL. Feedback: ${content}`,
-					},
-				],
-			});
-			const sentiment = aiResponse.response.trim().toUpperCase();
+        return new Response("Invalid request", { status: 400 });
+    },
+    async queue(batch: MessageBatch<any>, env: Env, ctx: ExecutionContext) {
+        for (const message of batch.messages) {
+            const content = message.body.text;
 
-			// 2. AI Pipeline Component
-			const embedding = await env.AI.run("@cf/baai/bge-small-en-v1.5", { text: [content] });
-			
-			// 3. Save to Vectorize
-			await env.VECTOR_INDEX.upsert([{ id: message.id, values: embedding.data[0] }]);
-			
-			// 4. Update Durable Object properties
-			const id = env.MY_DURABLE_OBJECT.idFromName("global-stats");
-			const stub = env.MY_DURABLE_OBJECT.get(id);
-			await stub.fetch(new Request("http://do/increment", {
-				method: "POST",
-				body: JSON.stringify({ text: content, sentiment }),
-				headers: { "Content-Type": "application/json" }
-			}));
+            // 1. AI Sentiment Analysis
+            const aiResponse = await env.AI.run("@cf/meta/llama-3-8b-instruct", {
+                messages: [
+                    {
+                        role: "system",
+                        content: "You are a sentiment analysis assistant. Analyze the sentiment of the following feedback and respond with only one word: POSITIVE, NEGATIVE, or NEUTRAL.",
+                    },
+                    {
+                        role: "user",
+                        content: `Analyze the sentiment of the following feedback and respond with only one word: POSITIVE, NEGATIVE, or NEUTRAL. Feedback: ${content}`,
+                    },
+                ],
+            });
+            const sentiment = aiResponse.response.trim().toUpperCase();
 
-			console.log(`feedback ${message.id} processed successfully: ${content} | Sentiment: ${JSON.stringify(sentiment)}`);
-		}
-	}
+            // 2. AI Pipeline Component
+            const embedding = await env.AI.run("@cf/baai/bge-small-en-v1.5", { text: [content] });
+
+            // 3. Save to Vectorize
+            await env.VECTOR_INDEX.upsert([{
+                id: message.id,
+                values: embedding.data[0],
+                metadata: { text: content }
+            }]);
+
+            // 4. Update Durable Object properties
+            const id = env.MY_DURABLE_OBJECT.idFromName("global-stats");
+            const stub = env.MY_DURABLE_OBJECT.get(id);
+            await stub.fetch(new Request("http://do/increment", {
+                method: "POST",
+                body: JSON.stringify({ text: content, sentiment }),
+                headers: { "Content-Type": "application/json" }
+            }));
+
+            console.log(`feedback ${message.id} processed successfully: ${content} | Sentiment: ${JSON.stringify(sentiment)}`);
+        }
+    }
 } satisfies ExportedHandler<Env>;

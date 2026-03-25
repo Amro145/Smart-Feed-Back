@@ -55,11 +55,6 @@
 		{
 			"binding": "VECTOR_INDEX",
 			"index_name": "feedback-vectors"
-		},
-		{
-			"binding": "VECTORIZE",
-			"index_name": "feedback-vectors",
-			"remote": true
 		}
 	]
 	/**

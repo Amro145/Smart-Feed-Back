@@ -13,17 +13,17 @@ This project leverages several core Cloudflare technologies to construct a highl
 - **Cloudflare Workers**: The core Edge compute layer acting as both the API logic and the host for the unified web dashboard.
 - **Cloudflare Queues** (`feedback-queue`): Receives heavy text submissions asynchronously to prevent UI stalling and process AI models safely.
 - **Cloudflare Workers AI**:
-  - Uses [`@cf/meta/llama-3-8b-instruct`](https://developers.cloudflare.com/workers-ai/models/llama-3-8b-instruct/) to rapidly label feedback text strings as `POSITIVE`, `NEGATIVE`, or `NEUTRAL`.
-  - Uses [`@cf/baai/bge-small-en-v1.5`](https://developers.cloudflare.com/workers-ai/models/bge-small-en-v1.5/) to embed messages into dimensions for semantic searchability.
-- **Cloudflare Vectorize** (`feedback-vectors`): Intercepts the generated BGE embeddings and indexes them for future AI RAG architectures and semantic queries.
-- **Cloudflare Durable Objects** (`MyDurableObject`): Acts as a globally consistent coordinator to carefully increment a global incoming message counter and store a structured `recent_messages` object array locally.
+  - Uses [\`@cf/meta/llama-3-8b-instruct\`](https://developers.cloudflare.com/workers-ai/models/llama-3-8b-instruct/) using system prompts to dynamically zero-shot label text strings autonomously as \`POSITIVE\`, \`NEGATIVE\`, or \`NEUTRAL\`.
+  - Uses [\`@cf/baai/bge-small-en-v1.5\`](https://developers.cloudflare.com/workers-ai/models/bge-small-en-v1.5/) to compute embeddings of incoming texts for relational awareness.
+- **Cloudflare Vectorize** (\`feedback-vectors\`): Stores the generated text embeddings alongside their original human-readable text internally in metadata. This database powers direct "top K" similarities queries when requested.
+- **Cloudflare Durable Objects** (\`MyDurableObject\`): Acts as a globally consistent coordinator to maintain live traffic counters, manage a fixed-size queue of the most recently processed texts, and handle internal \`/api/search\` API routing seamlessly.
 
 ---
 
 ## 🎨 Features
-* **Submit Portal & Live Polling UI**: Navigate to the Worker's root URL to access a beautiful sleek glassmorphism Dashboard. Feedback submitted is automatically flushed without page reloading.
-* **Edge-Triggered AI Labeling**: Instant inference run across serverless edge zones avoiding massive server spin-ups. 
-* **Vector Memory**: Submissions build memory inside Vectorize automatically bridging into next-gen feature potentials. 
+* **Submit Portal & Live Polling UI**: Navigate to the Worker's root URL to access a beautiful sleek glassmorphism Dashboard capturing live stats and submitting data silently via async \`fetch\`.
+* **Semantic Native Search Engine**: Type queries directly into the dashboard. It instantly generates the embedding and crosses your personal \`feedback-vectors\` index returning ranked semantic matches seamlessly formatted on your screen.
+* **Edge-Triggered AI Pipeline**: Instant AI inferences asynchronously isolated by Cloudflare Queues so the end-user UI remains perfectly stall-free.
 
 ---
 
